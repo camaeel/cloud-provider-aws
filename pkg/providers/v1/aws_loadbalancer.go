@@ -618,7 +618,12 @@ func (c *Cloud) ensureTargetGroup(targetGroup *elbv2.TargetGroup, serviceName ty
 			return nil, fmt.Errorf("expected only one target group on CreateTargetGroup, got %d groups", len(result.TargetGroups))
 		}
 
-		targetGroup = result.TargetGroups[0]
+		tg := result.TargetGroups[0]
+		tgARN := aws.StringValue(tg.TargetGroupArn)
+		if err := c.ensureTargetGroupTargets(tgARN, expectedTargets, nil); err != nil {
+			return nil, err
+		}
+		return tg, nil
 	}
 
 	// handle instances in service
@@ -834,8 +839,12 @@ func (c *Cloud) updateInstanceSecurityGroupsForNLB(lbName string, instances map[
 		for sgID, sg := range clusterSGs {
 			sgPerms := NewIPPermissionSet(sg.IpPermissions...).Ungroup()
 			if desiredSGIDs.Has(sgID) {
-				if err := c.updateInstanceSecurityGroupForNLBTraffic(sgID, sgPerms, healthRuleAnnotation, "tcp", healthCheckPorts, subnetCIDRs); err != nil {
-					return err
+				// If the client rule is 1) all addresses 2) tcp and 3) has same ports as the healthcheck,
+				// then the health rules are a subset of the client rule and are not needed.
+				if len(clientCIDRs) != 1 || clientCIDRs[0] != "0.0.0.0/0" || clientProtocol != "tcp" || !healthCheckPorts.Equal(clientPorts) {
+					if err := c.updateInstanceSecurityGroupForNLBTraffic(sgID, sgPerms, healthRuleAnnotation, "tcp", healthCheckPorts, subnetCIDRs); err != nil {
+						return err
+					}
 				}
 				if err := c.updateInstanceSecurityGroupForNLBTraffic(sgID, sgPerms, clientRuleAnnotation, clientProtocol, clientPorts, clientCIDRs); err != nil {
 					return err
